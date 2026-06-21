@@ -1,0 +1,200 @@
+// Listen at mosquitto_sub -h localhost -t "car/telemetry/horn"
+
+
+#include <WiFi.h>
+
+#include <PubSubClient.h>
+
+#include <TinyGPSPlus.h>
+
+#include <ArduinoJson.h>
+
+  
+
+// --- NETWORK CONFIGURATION ---
+
+const char* ssid = "OnePlus 11R 5G"; // Change to your Wi-Fi SSID
+
+const char* password = "HYPERLLM"; // Change to your Wi-Fi Password
+
+const char* mqtt_ip = "10.187.47.224"; // Change to your Laptop's Local IP
+
+  
+
+// --- PIN DEFINITIONS ---
+
+const int GPS_RX_PIN = 16;
+
+const int GPS_TX_PIN = 17;
+
+  
+
+// --- OBJECT INITIALIZATION ---
+
+WiFiClient espClient;
+
+PubSubClient client(espClient);
+
+TinyGPSPlus gps;
+
+  
+
+unsigned long lastPublishTime = 0;
+
+const unsigned long publishInterval = 3000; // Publish telemetry every 3 seconds
+
+  
+
+void setup_wifi() {
+
+delay(10);
+
+Serial.print("\nConnecting to ");
+
+Serial.println(ssid);
+
+WiFi.begin(ssid, password);
+
+  
+
+while (WiFi.status() != WL_CONNECTED) {
+
+delay(500);
+
+Serial.print(".");
+
+}
+
+Serial.println("\nWi-Fi connected successfully!");
+
+Serial.print("ESP32 IP address: ");
+
+Serial.println(WiFi.localIP());
+
+}
+
+  
+
+void reconnect_mqtt() {
+
+while (!client.connected()) {
+
+Serial.print("Attempting MQTT connection to server...");
+
+// Attempt to connect with a unique client ID
+
+if (client.connect("ESP32_Vehicle_Node")) {
+
+Serial.println("connected and synchronized!");
+
+} else {
+
+Serial.print("failed, rc=");
+
+Serial.print(client.state());
+
+Serial.println(" trying again in 5 seconds");
+
+delay(5000);
+
+}
+
+}
+
+}
+
+  
+
+void setup() {
+
+Serial.begin(115200);
+
+Serial2.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+
+setup_wifi();
+
+client.setServer(mqtt_ip, 1883);
+
+}
+
+  
+
+void loop() {
+
+// Feed GPS stream
+
+while (Serial2.available() > 0) {
+
+gps.encode(Serial2.read());
+
+}
+
+  
+
+// Keep MQTT connection alive
+
+if (!client.connected()) {
+
+reconnect_mqtt();
+
+}
+
+client.loop();
+
+  
+
+// Non-blocking timer for data transmission
+
+unsigned long now = millis();
+
+if (now - lastPublishTime > publishInterval) {
+
+lastPublishTime = now;
+
+  
+
+if (gps.location.isValid()) {
+
+// Create a fixed-size JSON Document allocation
+
+StaticJsonDocument<256> doc;
+
+// Build your structured enterprise notification format
+
+doc["timestamp"] = "2026-06-21T21:30:00"; // Placeholder until GPS time parse
+
+doc["lat"] = gps.location.lat();
+
+doc["lon"] = gps.location.lng();
+
+doc["horn"] = false; // Ground truth hardware wire logic goes here next
+
+doc["inside_geofence"] = false; // Calculated edge/server side flag
+
+  
+
+// Serialize JSON to a string buffer
+
+char jsonBuffer[256];
+
+serializeJson(doc, jsonBuffer);
+
+  
+
+// Publish structured payload to enterprise broker channel
+
+Serial.print("Publishing telemetry: ");
+
+Serial.println(jsonBuffer);
+
+client.publish("car/telemetry/horn", jsonBuffer);
+
+} else {
+
+Serial.println("Telemetry skipped: Waiting for satellite lock coordinates...");
+
+}
+
+}
+
+}

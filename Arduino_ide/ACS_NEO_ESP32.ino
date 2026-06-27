@@ -1,6 +1,7 @@
 // Listen at:
 // mosquitto_sub -h localhost -t "car/telemetry/horn"
 // Make sure to check the IP with tht host if error *rc-2* pops 
+// Check for IP as hostname -I
 
 #include <WiFi.h>
 #include <PubSubClient.h>

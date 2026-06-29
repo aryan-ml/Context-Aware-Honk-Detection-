@@ -24,7 +24,7 @@ PubSubClient client(espClient);
 TinyGPSPlus gps;
 
 unsigned long lastPublishTime = 0;
-const unsigned long publishInterval = 2000; // Broadcast updates every 2 seconds
+const unsigned long publishInterval = 1000; // Broadcast updates every 1 seconds
 
 
 void setup_wifi() {

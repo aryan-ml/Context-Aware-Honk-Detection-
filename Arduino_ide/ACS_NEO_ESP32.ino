@@ -26,9 +26,6 @@ TinyGPSPlus gps;
 unsigned long lastPublishTime = 0;
 const unsigned long publishInterval = 2000; // Broadcast updates every 2 seconds
 
-// --- CALIBRATION VARIABLES ---
-const float SENSITIVITY = 0.100; // 100mV per Amp for the 20A module
-const float Q_VREF = 2.50;       // Midpoint voltage baseline for 0 Amperes
 
 void setup_wifi() {
   delay(10);
@@ -73,33 +70,37 @@ void loop() {
 
     // 1. Read Current Sensor Volts
     int rawADC = analogRead(CURRENT_SENSOR_PIN);
-    float pinVoltage = (rawADC / 4095.0) * 3.3; // Convert 12-bit ADC to ESP32 pin voltage
-    
-    // 2. Calculate Amps (Since we are on a desk, we look for deviation from baseline)
-    // Note: Due to resistor tolerances, baseline might read slightly off 2.5V.
-    float currentAmps = (pinVoltage - 1.65) / SENSITIVITY; // Adjusted for ESP32 3.3V attenuation scale
+
+    const int HORN_THRESHOLD = 2690;
 
     // 3. Horn Flag Logic (If current threshold crossed, set to true)
-    bool hornActive = false;
+    bool hornActive = (rawADC < HORN_THRESHOLD);
+
+
+    Serial.println("-------------------------");
+    Serial.print("Latitude : ");
+    Serial.println(gps.location.lat(), 6);
+
+    Serial.print("Longitude: ");
+    Serial.println(gps.location.lng(), 6);
+
+    Serial.print("ADC      : ");
+    Serial.println(rawADC);
+
+    Serial.print("Horn     : ");
+    Serial.println(hornActive ? "YES" : "NO");
+
+    Serial.println("-------------------------");
     
-    // DESK TESTING TRICK: Since nothing is plugged in, touching the ACS712 chip 
-    // with your bare finger introduces electromagnetic noise that will cause 
-    // the ADC to spike up. We use that noise to test our logic flag!
-    
-    if (rawADC < 2690) {  // Custom threshold for ACS 30A clocking at 2699 with touch and idle at around 27xx 
-      hornActive = true;  // For demo desk purpose only with finger
-    }
-
-
-
     if (gps.location.isValid()) {
       StaticJsonDocument<256> doc;
       
-      doc["timestamp"]       = "2026-06-22T00:45:00"; 
+      doc["timestamp"]       = millis();
+      doc["car_id"]          = "CAR_001";
       doc["lat"]             = gps.location.lat();
       doc["lon"]             = gps.location.lng();
-      doc["horn"]            = hornActive; 
-      doc["inside_geofence"] = false; 
+      doc["horn"]            = hornActive;
+      
 
       char jsonBuffer[256];
       serializeJson(doc, jsonBuffer);

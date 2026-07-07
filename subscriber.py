@@ -1,12 +1,13 @@
 import json
 import csv
 import os
+import math
 from datetime import datetime
 import paho.mqtt.client as mqtt
 
 # MQTT CONFIGURATION
 
-BROKER = "localhost"
+BROKER = "localhost"    
 PORT = 1883
 TOPIC = "car/telemetry/horn"
 
@@ -14,6 +15,12 @@ TOPIC = "car/telemetry/horn"
 
 CSV_FILE = "events_log.csv"
 RAW_PACKET_LOG = "raw_packets.log"
+
+# GEOFENCE DEBOUNCE
+
+DEBOUNCE_COUNT = 3   # consecutive inside/outside readings to flip state
+MAX_HDOP = 6.0
+MIN_SATELLITES = 4
 
 # GEOFENCE (Polygon Vertices)
 # Replace these coordinates with your actual ones
@@ -27,6 +34,14 @@ SILENCE_ZONES = {
     ]
 }
 
+# State
+
+inside_history = []
+last_known_state = None  # "inside", "outside", or None
+last_zone = None
+last_horn = False
+packet_count = 0
+
 # Create CSV if it doesn't exist
 
 if not os.path.exists(CSV_FILE):
@@ -39,9 +54,17 @@ if not os.path.exists(CSV_FILE):
             "car_id",
             "latitude",
             "longitude",
+            "hdop",
+            "satellites",
+            "adc",
+            "gps_age",
+            "gps_valid",
             "horn",
             "inside_geofence",
             "zone",
+            "event_type",
+            "distance_to_zone",
+            "packet_count",
             "message",
             "raw_packet"
         ])
@@ -86,6 +109,64 @@ def check_geofence(lat, lon):
     return False, None
 
 
+def point_to_polygon_distance(lat, lon, polygon):
+    R = 6371000
+    mid_lat = sum(p[0] for p in polygon) / len(polygon)
+    lat_to_m = math.radians(1) * R
+    lon_to_m = lat_to_m * math.cos(math.radians(mid_lat))
+
+    inside = point_in_polygon(lat, lon, polygon)
+
+    min_dist_sq = float("inf")
+    n = len(polygon)
+    for i in range(n):
+        lat1, lon1 = polygon[i]
+        lat2, lon2 = polygon[(i + 1) % n]
+
+        x1, y1 = lon1 * lon_to_m, lat1 * lat_to_m
+        x2, y2 = lon2 * lon_to_m, lat2 * lat_to_m
+        px, py = lon * lon_to_m, lat * lat_to_m
+
+        dx, dy = x2 - x1, y2 - y1
+        length_sq = dx * dx + dy * dy
+
+        if length_sq == 0:
+            d_sq = (px - x1) * (px - x1) + (py - y1) * (py - y1)
+        else:
+            t = max(0, min(1, ((px - x1) * dx + (py - y1) * dy) / length_sq))
+            proj_x = x1 + t * dx
+            proj_y = y1 + t * dy
+            d_sq = (px - proj_x) * (px - proj_x) + (py - proj_y) * (py - proj_y)
+
+        min_dist_sq = min(min_dist_sq, d_sq)
+
+    dist = math.sqrt(min_dist_sq)
+    return -dist if inside else dist
+
+
+def update_debounced_state(inside):
+    global inside_history, last_known_state
+
+    inside_history.append(inside)
+    if len(inside_history) > DEBOUNCE_COUNT:
+        inside_history.pop(0)
+
+    if len(inside_history) < DEBOUNCE_COUNT:
+        return last_known_state
+
+    if all(inside_history):
+        new_state = "inside"
+    elif not any(inside_history):
+        new_state = "outside"
+    else:
+        return last_known_state
+
+    if new_state != last_known_state:
+        last_known_state = new_state
+
+    return last_known_state
+
+
 # MQTT CALLBACKS
 
 def on_connect(client, userdata, flags, rc):
@@ -116,6 +197,18 @@ def on_message(client, userdata, msg):
             print("Invalid GPS data")
             return
 
+        hdop = data.get("hdop")
+        satellites = data.get("satellites")
+        adc = data.get("adc")
+        gps_age = data.get("gps_age")
+        gps_valid = data.get("gps_valid")
+
+        # Reject bad GPS
+        if gps_valid is not True:
+            return
+        if (hdop is not None and hdop > MAX_HDOP) or (satellites is not None and satellites < MIN_SATELLITES):
+            return
+
         horn = bool(data.get("horn", False))
 
         car_id = data.get("car_id", "CAR_001")
@@ -129,25 +222,57 @@ def on_message(client, userdata, msg):
 
         inside, zone = check_geofence(lat, lon)
 
-        # Notification Logic
+        global last_zone, last_horn, packet_count
+        packet_count += 1
 
-        if inside:
+        previous_state = last_known_state
+        state = update_debounced_state(inside)
+
+        if state == "inside" and zone is not None:
+            last_zone = zone
+
+        if state == "inside":
 
             if horn:
-
-                message = (
-                    f"Vehicle honked inside {zone}."
-                )
-
+                message = f"Vehicle honked inside {last_zone}."
             else:
+                message = f"Vehicle entered {last_zone}."
 
-                message = (
-                    f"Vehicle entered {zone}."
-                )
+            is_inside = True
 
         else:
 
-            message = "Vehicle outside silence zone."
+            if previous_state == "inside":
+                message = f"Vehicle exited {last_zone}."
+            else:
+                message = "Vehicle outside silence zone."
+
+            is_inside = False
+
+        state_changed = previous_state != state
+        horn_activated = horn and not last_horn
+        last_horn = horn
+
+        # Event type
+        if horn and is_inside:
+            event_type = "HONK"
+        elif state == "inside" and previous_state != "inside":
+            event_type = "ENTER"
+        elif state != "inside" and previous_state == "inside":
+            event_type = "EXIT"
+        else:
+            event_type = "NORMAL"
+
+        # Distance to nearest zone boundary (negative = inside)
+        nearest_zone_name = None
+        nearest_dist = float("inf")
+        for zname, polygon in SILENCE_ZONES.items():
+            dist = point_to_polygon_distance(lat, lon, polygon)
+            if abs(dist) < abs(nearest_dist):
+                nearest_dist = dist
+                nearest_zone_name = zname
+
+        distance_to_zone = round(nearest_dist, 2)
 
         notification = {
 
@@ -161,23 +286,30 @@ def on_message(client, userdata, msg):
 
             "longitude": round(lon, 6),
 
+            "hdop": hdop,
+
+            "satellites": satellites,
+
             "horn": horn,
 
-            "inside_geofence": inside,
+            "inside_geofence": is_inside,
 
-            "zone": zone,
+            "zone": nearest_zone_name if nearest_zone_name else "None",
+
+            "event_type": event_type,
+
+            "distance_to_zone": distance_to_zone,
+
+            "packet_count": packet_count,
 
             "message": message
 
         }
 
-        print("\n" + "=" * 60)
-
-        print(json.dumps(notification, indent=4))
-
-        print("=" * 60)
-
-        # Save to CSV
+        if state_changed or horn_activated:
+            print("\n" + "=" * 60)
+            print(json.dumps(notification, indent=4))
+            print("=" * 60)
 
         with open(CSV_FILE, "a", newline="") as f:
 
@@ -195,11 +327,27 @@ def on_message(client, userdata, msg):
 
                 lon,
 
+                hdop,
+
+                satellites,
+
+                adc,
+
+                gps_age,
+
+                gps_valid,
+
                 horn,
 
-                inside,
+                is_inside,
 
-                zone,
+                nearest_zone_name if nearest_zone_name else "None",
+
+                event_type,
+
+                distance_to_zone,
+
+                packet_count,
 
                 message,
 

@@ -26,7 +26,7 @@ MIN_SATELLITES = 4
 # Replace these coordinates with your actual ones
 
 SILENCE_ZONES = {
-    "Hospital Zone": [
+    "Testing Zone": [
         (22.323735183458012, 73.13614802280819),
         (22.323661934390508, 73.1357714020674),
         (22.32381135064534,  73.135729903297),

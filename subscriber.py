@@ -2,6 +2,7 @@ import json
 import csv
 import os
 import math
+import traceback
 import threading
 import time
 from datetime import datetime
@@ -189,47 +190,51 @@ def detection_loop():
 
     model = YOLO(YOLO_MODEL)
 
-    cap = cv2.VideoCapture(CAMERA_URL)
-    if not cap.isOpened():
-        print("Failed to connect to camera.")
-        return
+    while True:
+        cap = cv2.VideoCapture(CAMERA_URL)
+        if not cap.isOpened():
+            print("Failed to connect to camera. Retrying in 1s...")
+            time.sleep(1)
+            continue
 
-    prev = time.time()
+        print("Camera connected.")
+        prev = time.time()
 
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to read frame.")
-                break
-
-            curr = time.time()
-            dt = curr - prev
-            fps = 1.0 / dt if dt > 0 else 0.0
-            prev = curr
-
-            results = model(frame, verbose=False, classes=TARGET_CLASSES)
-            for box in results[0].boxes:
-                if (
-                    int(box.cls[0]) in TARGET_CLASSES
-                    and float(box.conf[0]) >= CONFIDENCE_THRESHOLD
-                ):
-                    with detection_lock:
-                        last_person_seen = time.time()
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    print("Failed to read frame. Reconnecting in 1s...")
+                    time.sleep(1)
                     break
 
-            annotated = results[0].plot()
-            cv2.putText(
-                annotated, f"FPS: {fps:.1f}", (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
-            )
-            cv2.imshow("Detection", annotated)
+                curr = time.time()
+                dt = curr - prev
+                fps = 1.0 / dt if dt > 0 else 0.0
+                prev = curr
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
+                results = model(frame, verbose=False, classes=TARGET_CLASSES)
+                for box in results[0].boxes:
+                    if (
+                        int(box.cls[0]) in TARGET_CLASSES
+                        and float(box.conf[0]) >= CONFIDENCE_THRESHOLD
+                    ):
+                        with detection_lock:
+                            last_person_seen = time.time()
+                        break
+
+                annotated = results[0].plot()
+                cv2.putText(
+                    annotated, f"FPS: {fps:.1f}", (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
+                )
+                cv2.imshow("Detection", annotated)
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    return
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
 
 
 # MQTT CALLBACKS
@@ -305,7 +310,7 @@ def on_message(client, userdata, msg):
         distance_to_zone = round(nearest_dist, 2)
 
         # Event type
-        if horn and nearest_dist <= 0:
+        if horn and inside:
             event_type = "HONK"
         elif state == "inside" and previous_state != "inside":
             event_type = "ENTER"
@@ -325,7 +330,7 @@ def on_message(client, userdata, msg):
         if state == "inside" and zone is not None:
             last_zone = zone
 
-        if nearest_dist <= 0:
+        if inside:
 
             if horn:
                 if justified:
@@ -333,7 +338,10 @@ def on_message(client, userdata, msg):
                 else:
                     message = f"Honk unjustified inside {nearest_zone_name}."
             else:
-                message = f"Vehicle entered {nearest_zone_name}."
+                if event_type == "ENTER":
+                    message = f"Vehicle entered {nearest_zone_name}."
+                else:
+                    message = f"Vehicle inside {nearest_zone_name}."
 
             is_inside = True
 
@@ -435,14 +443,14 @@ def on_message(client, userdata, msg):
 
             ])
 
-    except Exception as e:
+    except Exception:
 
-        print(e)
+        traceback.print_exc()
 
 
 # MAIN
 
-client = mqtt.Client()
+client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION1)
 
 client.on_connect = on_connect
 client.on_message = on_message
@@ -451,12 +459,12 @@ client.connect(BROKER, PORT, 60)
 
 print("Waiting for telemetry...\n")
 
-client.loop_start()
+detection_thread = threading.Thread(target=detection_loop, daemon=True)
+detection_thread.start()
 
 try:
-    detection_loop()
+    client.loop_forever()
 except KeyboardInterrupt:
     pass
 finally:
-    client.loop_stop()
     client.disconnect()

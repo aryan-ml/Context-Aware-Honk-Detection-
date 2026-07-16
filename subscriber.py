@@ -2,8 +2,12 @@ import json
 import csv
 import os
 import math
+import threading
+import time
 from datetime import datetime
 import paho.mqtt.client as mqtt
+from ultralytics import YOLO
+import cv2
 
 # MQTT CONFIGURATION
 
@@ -21,6 +25,14 @@ RAW_PACKET_LOG = "raw_packets.log"
 DEBOUNCE_COUNT = 3   # consecutive inside/outside readings to flip state
 MAX_HDOP = 6.0
 MIN_SATELLITES = 4
+
+# CAMERA / YOLO
+
+CAMERA_URL = "http://10.181.118.4:4747/video"
+YOLO_MODEL = "yolo11n.pt"
+TARGET_CLASSES = [0]          # person only
+CONFIDENCE_THRESHOLD = 0.5
+DETECTION_WINDOW = 2.0        # seconds — person seen within this window counts
 
 # GEOFENCE (Polygon Vertices)
 # Replace these coordinates with your actual ones
@@ -41,6 +53,8 @@ last_known_state = None  # "inside", "outside", or None
 last_zone = None
 last_horn = False
 packet_count = 0
+last_person_seen = 0.0
+detection_lock = threading.Lock()
 
 # Create CSV if it doesn't exist
 
@@ -63,6 +77,7 @@ if not os.path.exists(CSV_FILE):
             "inside_geofence",
             "zone",
             "event_type",
+            "justified",
             "distance_to_zone",
             "packet_count",
             "message",
@@ -167,6 +182,56 @@ def update_debounced_state(inside):
     return last_known_state
 
 
+# DETECTION LOOP
+
+def detection_loop():
+    global last_person_seen
+
+    model = YOLO(YOLO_MODEL)
+
+    cap = cv2.VideoCapture(CAMERA_URL)
+    if not cap.isOpened():
+        print("Failed to connect to camera.")
+        return
+
+    prev = time.time()
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to read frame.")
+                break
+
+            curr = time.time()
+            dt = curr - prev
+            fps = 1.0 / dt if dt > 0 else 0.0
+            prev = curr
+
+            results = model(frame, verbose=False, classes=TARGET_CLASSES)
+            for box in results[0].boxes:
+                if (
+                    int(box.cls[0]) in TARGET_CLASSES
+                    and float(box.conf[0]) >= CONFIDENCE_THRESHOLD
+                ):
+                    with detection_lock:
+                        last_person_seen = time.time()
+                    break
+
+            annotated = results[0].plot()
+            cv2.putText(
+                annotated, f"FPS: {fps:.1f}", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
+            )
+            cv2.imshow("Detection", annotated)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 # MQTT CALLBACKS
 
 def on_connect(client, userdata, flags, rc):
@@ -222,21 +287,53 @@ def on_message(client, userdata, msg):
 
         inside, zone = check_geofence(lat, lon)
 
-        global last_zone, last_horn, packet_count
+        global last_zone, last_horn, packet_count, last_person_seen
         packet_count += 1
 
         previous_state = last_known_state
         state = update_debounced_state(inside)
 
+        # Distance to nearest zone boundary (negative = inside)
+        nearest_zone_name = None
+        nearest_dist = float("inf")
+        for zname, polygon in SILENCE_ZONES.items():
+            dist = point_to_polygon_distance(lat, lon, polygon)
+            if abs(dist) < abs(nearest_dist):
+                nearest_dist = dist
+                nearest_zone_name = zname
+
+        distance_to_zone = round(nearest_dist, 2)
+
+        # Event type
+        if horn and nearest_dist <= 0:
+            event_type = "HONK"
+        elif state == "inside" and previous_state != "inside":
+            event_type = "ENTER"
+        elif state != "inside" and previous_state == "inside":
+            event_type = "EXIT"
+        else:
+            event_type = "NORMAL"
+
+        # Justification (only meaningful on HONK)
+        if event_type == "HONK":
+            with detection_lock:
+                justified = (time.time() - last_person_seen) <= DETECTION_WINDOW
+        else:
+            justified = None
+
+        # Track last zone for exit messages
         if state == "inside" and zone is not None:
             last_zone = zone
 
-        if state == "inside":
+        if nearest_dist <= 0:
 
             if horn:
-                message = f"Vehicle honked inside {last_zone}."
+                if justified:
+                    message = f"Honk justified inside {nearest_zone_name}."
+                else:
+                    message = f"Honk unjustified inside {nearest_zone_name}."
             else:
-                message = f"Vehicle entered {last_zone}."
+                message = f"Vehicle entered {nearest_zone_name}."
 
             is_inside = True
 
@@ -252,27 +349,6 @@ def on_message(client, userdata, msg):
         state_changed = previous_state != state
         horn_activated = horn and not last_horn
         last_horn = horn
-
-        # Event type
-        if horn and is_inside:
-            event_type = "HONK"
-        elif state == "inside" and previous_state != "inside":
-            event_type = "ENTER"
-        elif state != "inside" and previous_state == "inside":
-            event_type = "EXIT"
-        else:
-            event_type = "NORMAL"
-
-        # Distance to nearest zone boundary (negative = inside)
-        nearest_zone_name = None
-        nearest_dist = float("inf")
-        for zname, polygon in SILENCE_ZONES.items():
-            dist = point_to_polygon_distance(lat, lon, polygon)
-            if abs(dist) < abs(nearest_dist):
-                nearest_dist = dist
-                nearest_zone_name = zname
-
-        distance_to_zone = round(nearest_dist, 2)
 
         notification = {
 
@@ -297,6 +373,8 @@ def on_message(client, userdata, msg):
             "zone": nearest_zone_name if nearest_zone_name else "None",
 
             "event_type": event_type,
+
+            "justified": justified,
 
             "distance_to_zone": distance_to_zone,
 
@@ -345,6 +423,8 @@ def on_message(client, userdata, msg):
 
                 event_type,
 
+                justified,
+
                 distance_to_zone,
 
                 packet_count,
@@ -371,4 +451,12 @@ client.connect(BROKER, PORT, 60)
 
 print("Waiting for telemetry...\n")
 
-client.loop_forever()
+client.loop_start()
+
+try:
+    detection_loop()
+except KeyboardInterrupt:
+    pass
+finally:
+    client.loop_stop()
+    client.disconnect()

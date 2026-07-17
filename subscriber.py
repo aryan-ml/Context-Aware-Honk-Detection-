@@ -53,6 +53,7 @@ inside_history = []
 last_known_state = None  # "inside", "outside", or None
 last_zone = None
 last_horn = False
+last_justified = None
 packet_count = 0
 last_person_seen = 0.0
 detection_lock = threading.Lock()
@@ -356,7 +357,9 @@ def on_message(client, userdata, msg):
 
         state_changed = previous_state != state
         horn_activated = horn and not last_horn
+        justification_changed = justified != last_justified
         last_horn = horn
+        last_justified = justified
 
         notification = {
 
@@ -392,7 +395,7 @@ def on_message(client, userdata, msg):
 
         }
 
-        if state_changed or horn_activated:
+        if state_changed or horn_activated or justification_changed:
             print("\n" + "=" * 60)
             print(json.dumps(notification, indent=4))
             print("=" * 60)

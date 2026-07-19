@@ -293,7 +293,7 @@ def on_message(client, userdata, msg):
 
         inside, zone = check_geofence(lat, lon)
 
-        global last_zone, last_horn, packet_count, last_person_seen
+        global last_zone, last_horn, last_justified, packet_count, last_person_seen
         packet_count += 1
 
         previous_state = last_known_state

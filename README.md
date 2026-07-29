@@ -1,4 +1,4 @@
-<![CDATA[<div align="center">
+<div align="center">
 
 # 🚗 Context-Aware Honk Detection & Violation Enforcement System
 
@@ -599,4 +599,3 @@ edge_timestamp,server_timestamp,car_id,latitude,longitude,...,event_type,justifi
 *Making silence zones actually silent.*
 
 </div>
-]]>

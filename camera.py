@@ -2,7 +2,7 @@ import cv2
 import time
 from ultralytics import YOLO
 
-URL = "http://10.181.118.4:4747/video"
+URL = "http://10.110.32.159:4747/video"
 
 cap = cv2.VideoCapture(URL)
 

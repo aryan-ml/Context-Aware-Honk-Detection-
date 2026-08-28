@@ -1,1 +1,0 @@
-edge_timestamp,server_timestamp,car_id,latitude,longitude,hdop,satellites,adc,gps_age,gps_valid,horn,inside_geofence,zone,event_type,justified,distance_to_zone,packet_count,message,raw_packet

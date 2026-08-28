@@ -11,7 +11,7 @@
 // --- NETWORK CONFIGURATION ---
 const char* ssid = "OnePlus 11R 5G";      // Change to your Wi-Fi SSID
 const char* password = "HYPERLLM";        // Change to your Wi-Fi Password
-const char* mqtt_ip = "10.181.118.224";    // Change to your Laptop's Local IP
+const char* mqtt_ip = "10.110.32.224";    // Change to your Laptop's Local IP
 
 // --- PIN DEFINITIONS ---
 const int GPS_RX_PIN = 16;

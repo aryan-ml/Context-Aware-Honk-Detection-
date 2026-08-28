@@ -29,7 +29,7 @@ MIN_SATELLITES = 4
 
 # CAMERA / YOLO
 
-CAMERA_URL = "http://10.181.118.4:4747/video"
+CAMERA_URL = "http://10.110.32.159:4747/video"
 YOLO_MODEL = "yolo11n.pt"
 TARGET_CLASSES = [0]          # person only
 CONFIDENCE_THRESHOLD = 0.5
